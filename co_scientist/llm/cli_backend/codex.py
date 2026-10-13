@@ -192,9 +192,34 @@ def _forced_record_tool(spec: AgentCallSpec, record_tools: list[str]) -> str | N
 
 def _strict_object_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Codex expects a self-contained JSON Schema for the final response."""
-    out = dict(schema)
+    out = _strict_schema(schema)
     out.setdefault("type", "object")
     out.setdefault("additionalProperties", False)
+    return out
+
+
+def _strict_schema(schema: Any) -> Any:
+    """Adapt tool schemas to Codex strict-output rules."""
+    if not isinstance(schema, dict):
+        return schema
+
+    out = dict(schema)
+    properties = out.get("properties")
+    if isinstance(properties, dict):
+        out["type"] = "object"
+        out["additionalProperties"] = False
+        out["properties"] = {
+            name: _strict_schema(value) for name, value in properties.items()
+        }
+        # Codex requires every declared property to appear in `required`.
+        out["required"] = list(properties)
+
+    if "items" in out:
+        out["items"] = _strict_schema(out["items"])
+    for keyword in ("anyOf", "oneOf", "allOf"):
+        variants = out.get(keyword)
+        if isinstance(variants, list):
+            out[keyword] = [_strict_schema(value) for value in variants]
     return out
 
 

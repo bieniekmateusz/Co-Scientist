@@ -30,6 +30,7 @@ from co_scientist.llm.cli_backend.claude_code import (
     build_prompt,
     effort_for_thinking_tokens,
 )
+from co_scientist.llm.cli_backend.codex import _strict_object_schema
 from co_scientist.llm.retry import CliBackendError, CliRetryableError
 from co_scientist.llm.routing import ModelRoute
 from co_scientist.llm.types import (
@@ -111,6 +112,28 @@ def _ctx(task_id: str | None = None) -> CallContext:
 
 def _behave(monkeypatch: pytest.MonkeyPatch, **behavior: Any) -> None:
     monkeypatch.setenv("FAKE_CLI_BEHAVIOR", json.dumps(behavior))
+
+
+# --------------------------------------------------------------------------- #
+# Codex schema compatibility
+
+
+def test_codex_output_schema_requires_all_declared_properties() -> None:
+    schema = _strict_object_schema({
+        "type": "object",
+        "properties": {
+            "objective": {"type": "string"},
+            "constraints": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+            },
+        },
+        "required": ["objective"],
+    })
+
+    assert schema["required"] == ["objective", "constraints"]
+    assert schema["properties"]["constraints"]["required"] == ["name"]
+    assert schema["additionalProperties"] is False
 
 
 # --------------------------------------------------------------------------- #
