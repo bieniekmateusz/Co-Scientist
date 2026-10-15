@@ -41,6 +41,26 @@ def _resp():
     )
 
 
+def _responses_resp():
+    return SimpleNamespace(
+        id="resp_x",
+        model="gpt-6-luna",
+        status="completed",
+        incomplete_details=None,
+        output=[
+            {"type": "message", "content": [{"type": "output_text", "text": "ok"}]},
+            {
+                "type": "function_call",
+                "id": "fc_x",
+                "call_id": "call_x",
+                "name": "record_hypothesis",
+                "arguments": '{"title":"probe"}',
+            },
+        ],
+        usage={"input_tokens": 10, "output_tokens": 5, "input_tokens_details": {}},
+    )
+
+
 def _continuation_spec(model: str, agent="generation", mode=""):
     """A spec mid-tool-loop: assistant tool_use carrying a thought signature."""
     return AgentCallSpec(
@@ -93,10 +113,18 @@ async def _capture(cfg, conn, provider: str, spec) -> dict:
 
     with patch("openai.AsyncOpenAI") as mock_sdk:
         inst = mock_sdk.return_value
-        inst.chat = MagicMock()
-        inst.chat.completions = MagicMock()
-        create = AsyncMock(return_value=_resp())
-        inst.chat.completions.create = create
+        create = AsyncMock(
+            return_value=_responses_resp()
+            if cfg.llm.openai.api == "responses"
+            else _resp()
+        )
+        if cfg.llm.openai.api == "responses":
+            inst.responses = MagicMock()
+            inst.responses.create = create
+        else:
+            inst.chat = MagicMock()
+            inst.chat.completions = MagicMock()
+            inst.chat.completions.create = create
         client = get_provider(cfg, db=conn, budget=budget)
         ctx = CallContext(
             session_id="ses_x", task_id=None, agent="generation", action="t",
@@ -187,3 +215,79 @@ async def test_gemini_ignores_legacy_thinking_token_budget(tmp_cfg, conn):
     spec.route.thinking_tokens = 8000
     sent = await _capture(cfg, conn, "gemini", spec)
     assert "reasoning_effort" not in sent
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_effort_override_is_sent_with_function_tools(tmp_cfg, conn):
+    cfg = tmp_cfg
+    cfg.secrets.OPENAI_API_KEY = "sk-fake"
+    cfg.llm.openai.reasoning_effort_by_agent = {"generation": "none"}
+    spec = _continuation_spec(
+        "gpt-6-luna", agent="generation", mode="literature",
+    )
+    spec.tools = [{
+        "name": "record_hypothesis",
+        "description": "Record a hypothesis",
+        "input_schema": {"type": "object", "properties": {}},
+    }]
+    spec.tool_choice = {"type": "tool", "name": "record_hypothesis"}
+
+    sent = await _capture(cfg, conn, "openai_compatible", spec)
+
+    assert sent["reasoning_effort"] == "none"
+    assert sent["tools"][0]["function"]["name"] == "record_hypothesis"
+    assert sent["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "record_hypothesis"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_effort_precedence(tmp_cfg, conn):
+    cfg = tmp_cfg
+    cfg.secrets.OPENAI_API_KEY = "sk-fake"
+    cfg.llm.openai.reasoning_effort = "low"
+    cfg.llm.openai.reasoning_effort_by_agent = {"generation": "high"}
+
+    agent_override = await _capture(
+        cfg, conn, "openai_compatible",
+        _continuation_spec("gpt-6-luna", agent="generation", mode="literature"),
+    )
+    global_fallback = await _capture(
+        cfg, conn, "openai_compatible",
+        _continuation_spec("gpt-6-luna", agent="parse_goal"),
+    )
+
+    assert agent_override["reasoning_effort"] == "high"
+    assert global_fallback["reasoning_effort"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_responses_transport_sends_tools_and_reasoning(tmp_cfg, conn):
+    cfg = tmp_cfg
+    cfg.secrets.OPENAI_API_KEY = "sk-fake"
+    cfg.llm.openai.api = "responses"
+    cfg.llm.openai.reasoning_effort_by_agent = {"generation": "low"}
+    spec = _continuation_spec(
+        "gpt-6-luna", agent="generation", mode="literature",
+    )
+    spec.tools = [{
+        "name": "record_hypothesis",
+        "description": "Record a hypothesis",
+        "input_schema": {"type": "object", "properties": {}},
+    }]
+    spec.tool_choice = {"type": "tool", "name": "record_hypothesis"}
+
+    sent = await _capture(cfg, conn, "openai_compatible", spec)
+
+    assert sent["reasoning"] == {"effort": "low"}
+    assert sent["store"] is False
+    assert sent["include"] == ["reasoning.encrypted_content"]
+    assert sent["tools"][0]["type"] == "function"
+    assert sent["tools"][0]["name"] == "record_hypothesis"
+    assert sent["tool_choice"] == {
+        "type": "function",
+        "name": "record_hypothesis",
+    }
+    assert any(item.get("type") == "function_call" for item in sent["input"])
+    assert any(item.get("type") == "function_call_output" for item in sent["input"])

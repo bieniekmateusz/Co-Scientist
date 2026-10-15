@@ -1,12 +1,12 @@
-"""OpenAI Chat Completions provider.
+"""OpenAI Chat Completions and Responses provider.
 
 Translates the project's Anthropic-flavored `AgentCallSpec` into OpenAI's
-Chat Completions request format, calls the SDK, then wraps the response in
+configured request format, calls the SDK, then wraps the response in
 adapter classes that mimic anthropic.types.Message (so `resp.raw.content`,
 `resp.raw.stop_reason`, etc. behave the same way agents already expect).
 
 Supports:
-- OpenAI (chat.completions, function calling, reasoning_effort for o-series).
+- OpenAI Chat Completions or Responses (selected with `[llm.openai].api`).
 - Any OpenAI-compatible endpoint via `cfg.llm.openai.base_url`: Groq,
   Together, OpenRouter, Mistral, Ollama local, Google Gemini's OpenAI-compat
   endpoint, vLLM, etc.
@@ -15,6 +15,8 @@ Caveats (intentional gaps vs. AnthropicClient):
 - cache_control breakpoints are stripped — only Anthropic supports them.
 - Thinking budgets are translated to `reasoning_effort` when the model name
   starts with "o" (o1/o3/o4 family); else dropped.
+- Responses requests use `reasoning: {effort: ...}` and replay encrypted
+  reasoning output items to continue stateless tool loops.
 - Gemini thinking levels can be configured explicitly; otherwise the model's
   provider default is used.
 - Provider-owned tool-call fields are retained as opaque response metadata.
@@ -81,6 +83,10 @@ class _Block:
     # survive normalization unchanged, but the request adapter decides which
     # fields are safe to replay for its configured provider.
     provider_fields: dict[str, Any] = field(default_factory=dict)
+    # Complete Responses output items needed to replay a reasoning/tool turn
+    # statelessly on the next call. Carried through the tool loop, not sent to
+    # Chat Completions.
+    responses_output_items: list[dict[str, Any]] = field(default_factory=list)
     signature: str = ""
     data: str = ""
     thinking: str = ""
@@ -172,6 +178,8 @@ class OpenAIClient:
         self._provider_name = provider_name or (
             "openai_compatible" if self._compat_mode else "openai"
         )
+        self._api = cfg.llm.openai.api
+        self._store_responses = cfg.llm.openai.store_responses
 
         # API key resolution precedence:
         #   1. explicit OPENAI_API_KEY (cfg.secrets or env)
@@ -220,16 +228,25 @@ class OpenAIClient:
     ) -> AnthropicResponse:
         is_gemini = self._provider_name in ("gemini", "google")
         reasoning_effort = (
-            _gemini_reasoning_effort(self._cfg, spec) if is_gemini else None
+            _gemini_reasoning_effort(self._cfg, spec)
+            if is_gemini
+            else _openai_reasoning_effort(self._cfg, spec)
         )
-        request = _build_openai_request(
-            spec,
-            reasoning_effort=reasoning_effort,
-            translate_thinking_tokens=not is_gemini,
-            tool_call_replay_fields=_TOOL_CALL_REPLAY_FIELDS_BY_PROVIDER.get(
+        request_builder = (
+            _build_openai_responses_request
+            if self._api == "responses"
+            else _build_openai_request
+        )
+        request_kwargs = {
+            "reasoning_effort": reasoning_effort,
+            "translate_thinking_tokens": not is_gemini,
+            "tool_call_replay_fields": _TOOL_CALL_REPLAY_FIELDS_BY_PROVIDER.get(
                 self._provider_name, _NO_TOOL_CALL_REPLAY_FIELDS
             ),
-        )
+        }
+        if self._api == "responses":
+            request_kwargs["store_responses"] = self._store_responses
+        request = request_builder(spec, **request_kwargs)
 
         # Estimate + admit (same accounting as AnthropicClient).
         est_in = est_input_tokens or _rough_token_count(spec)
@@ -245,6 +262,8 @@ class OpenAIClient:
         t0 = time.monotonic()
 
         async def _do() -> Any:
+            if self._api == "responses":
+                return await self._client.responses.create(**request)
             return await self._client.chat.completions.create(**request)
 
         try:
@@ -258,7 +277,11 @@ class OpenAIClient:
             raise
         finished = datetime.now(UTC)
 
-        message = _adapt_response(raw, spec.route.model)
+        message = (
+            _adapt_responses_response(raw, spec.route.model)
+            if self._api == "responses"
+            else _adapt_response(raw, spec.route.model)
+        )
         in_tok = message.usage.input_tokens
         out_tok = message.usage.output_tokens
         cost_usd = estimate_cost_usd(
@@ -279,6 +302,7 @@ class OpenAIClient:
         trn_id = transcript_id()
         artifact = {
             "provider": self._provider_name,
+            "api": self._api,
             "request": _redact(request),
             "response": message.model_dump(),
             "started_at": started.isoformat(),
@@ -320,7 +344,7 @@ class OpenAIClient:
 
 
 # --------------------------------------------------------------------------- #
-# Request translation: AgentCallSpec → OpenAI Chat Completions
+# Request translation: AgentCallSpec → OpenAI Chat Completions / Responses
 
 def _build_openai_request(
     spec: AgentCallSpec,
@@ -404,6 +428,128 @@ def _build_openai_request(
         request["reasoning_effort"] = _budget_to_effort(spec.route.thinking_tokens)
 
     return request
+
+
+def _build_openai_responses_request(
+    spec: AgentCallSpec,
+    *,
+    reasoning_effort: str | None = None,
+    translate_thinking_tokens: bool = True,
+    tool_call_replay_fields: frozenset[str] = _NO_TOOL_CALL_REPLAY_FIELDS,
+    store_responses: bool = False,
+) -> dict[str, Any]:
+    """Translate an `AgentCallSpec` into the Responses API request format."""
+    chat_request = _build_openai_request(
+        spec,
+        reasoning_effort=reasoning_effort,
+        translate_thinking_tokens=translate_thinking_tokens,
+        tool_call_replay_fields=tool_call_replay_fields,
+    )
+    if "stop" in chat_request:
+        raise ValueError("Responses API does not support this request's stop sequences")
+
+    request: dict[str, Any] = {
+        "model": chat_request["model"],
+        "input": _responses_input_from_spec(spec, chat_request["messages"]),
+        "max_output_tokens": chat_request["max_completion_tokens"],
+        "store": store_responses,
+    }
+    if not store_responses:
+        # Needed to replay reasoning turns when the client owns the history.
+        request["include"] = ["reasoning.encrypted_content"]
+
+    if "tools" in chat_request:
+        request["tools"] = [
+            {"type": "function", **tool["function"]}
+            for tool in chat_request["tools"]
+        ]
+    if "tool_choice" in chat_request:
+        choice = chat_request["tool_choice"]
+        if isinstance(choice, dict) and choice.get("type") == "function":
+            request["tool_choice"] = {
+                "type": "function",
+                "name": choice["function"]["name"],
+            }
+        else:
+            request["tool_choice"] = choice
+    if "reasoning_effort" in chat_request:
+        request["reasoning"] = {"effort": chat_request["reasoning_effort"]}
+    return request
+
+
+def _responses_input_from_spec(
+    spec: AgentCallSpec,
+    chat_messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Convert Chat-shaped history to Responses input, preserving prior outputs.
+
+    Responses reasoning items (including encrypted content) must be replayed
+    when continuing a stateless tool loop. The tool loop carries those items on
+    the first normalized tool block of each assistant turn.
+    """
+    raw_outputs_by_call_id: dict[str, list[dict[str, Any]]] = {}
+    completed_tool_ids: set[str] = set()
+    for message in spec.extra_messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if message.get("role") == "assistant" and block.get("type") == "tool_use":
+                call_id = str(block.get("id", ""))
+                output_items = block.get("responses_output_items")
+                if call_id and isinstance(output_items, list):
+                    raw_outputs_by_call_id[call_id] = output_items
+            elif message.get("role") == "user" and block.get("type") == "tool_result":
+                completed_tool_ids.add(str(block.get("tool_use_id", "")))
+
+    input_items: list[dict[str, Any]] = []
+    for message in chat_messages:
+        role = message.get("role", "user")
+        if role == "tool":
+            input_items.append({
+                "type": "function_call_output",
+                "call_id": message.get("tool_call_id", ""),
+                "output": message.get("content", ""),
+            })
+            continue
+
+        tool_calls = message.get("tool_calls") or []
+        if role == "assistant" and tool_calls:
+            raw_items = next(
+                (
+                    raw_outputs_by_call_id[tc.get("id", "")]
+                    for tc in tool_calls
+                    if tc.get("id", "") in raw_outputs_by_call_id
+                ),
+                None,
+            )
+            if raw_items is not None:
+                input_items.extend(
+                    item
+                    for item in raw_items
+                    if item.get("type") != "function_call"
+                    or item.get("call_id") in completed_tool_ids
+                )
+                continue
+
+            content = message.get("content")
+            if content:
+                input_items.append({"role": role, "content": content})
+            for tool_call in tool_calls:
+                function = tool_call.get("function", {})
+                input_items.append({
+                    "type": "function_call",
+                    "call_id": tool_call.get("id", ""),
+                    "name": function.get("name", ""),
+                    "arguments": function.get("arguments", "{}"),
+                })
+            continue
+
+        if message.get("content") is not None:
+            input_items.append({"role": role, "content": message["content"]})
+    return input_items
 
 
 def _translate_anthropic_message(
@@ -504,7 +650,7 @@ def _translate_anthropic_message(
 
 
 # --------------------------------------------------------------------------- #
-# Response adaptation: OpenAI ChatCompletion → Anthropic-shaped Message
+# Response adaptation: OpenAI response → Anthropic-shaped Message
 
 _STOP_REASON_MAP = {
     "stop": "end_turn",
@@ -566,6 +712,94 @@ def _adapt_response(raw: Any, model: str) -> _Message:
         model=model,
         id=getattr(raw, "id", "") or "",
     )
+
+
+def _adapt_responses_response(raw: Any, model: str) -> _Message:
+    """Normalize a Responses API result to the Message surface agents consume."""
+    output_items = _response_value(raw, "output", []) or []
+    serialized_items = [_response_item_dict(item) for item in output_items]
+    blocks: list[_Block] = []
+    has_refusal = False
+    saved_response_items = False
+
+    for item in output_items:
+        item_type = _response_value(item, "type", "")
+        if item_type == "message":
+            for content in _response_value(item, "content", []) or []:
+                content_type = _response_value(content, "type", "")
+                if content_type == "output_text":
+                    text = _response_value(content, "text", "")
+                    if text:
+                        blocks.append(_Block(type="text", text=text))
+                elif content_type == "refusal":
+                    refusal = _response_value(content, "refusal", "")
+                    blocks.append(_Block(type="text", text=refusal))
+                    has_refusal = True
+        elif item_type == "function_call":
+            name = _response_value(item, "name", "")
+            arguments = _response_value(item, "arguments", "{}")
+            try:
+                parsed = json.loads(arguments) if isinstance(arguments, str) else dict(arguments)
+                args = parsed if isinstance(parsed, dict) else {"_args": parsed}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                args = {"_raw_arguments": arguments}
+            call_id = _response_value(item, "call_id", "") or _response_value(item, "id", "")
+            blocks.append(_Block(
+                type="tool_use",
+                id=call_id or f"call_{uuid.uuid4().hex[:12]}",
+                name=name,
+                input=args,
+                responses_output_items=(
+                    serialized_items if not saved_response_items else []
+                ),
+            ))
+            saved_response_items = True
+
+    has_tool_call = any(block.type == "tool_use" for block in blocks)
+    status = _response_value(raw, "status", "completed")
+    incomplete = _response_value(raw, "incomplete_details", None)
+    incomplete_reason = _response_value(incomplete, "reason", None)
+    if has_tool_call:
+        stop_reason = "tool_use"
+    elif has_refusal or incomplete_reason == "content_filter":
+        stop_reason = "refusal"
+    elif status == "incomplete":
+        stop_reason = "max_tokens"
+    else:
+        stop_reason = "end_turn"
+
+    usage_obj = _response_value(raw, "usage", None)
+    usage_details = _response_value(usage_obj, "input_tokens_details", None)
+    usage = _Usage(
+        input_tokens=int(_response_value(usage_obj, "input_tokens", 0) or 0),
+        output_tokens=int(_response_value(usage_obj, "output_tokens", 0) or 0),
+        cache_read_input_tokens=int(
+            _response_value(usage_details, "cached_tokens", 0) or 0
+        ),
+    )
+    return _Message(
+        content=blocks,
+        stop_reason=stop_reason,
+        usage=usage,
+        model=_response_value(raw, "model", None) or model,
+        id=_response_value(raw, "id", "") or "",
+    )
+
+
+def _response_value(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _response_item_dict(item: Any) -> dict[str, Any]:
+    model_dump = getattr(item, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(exclude_none=True)
+    if isinstance(item, dict):
+        return dict(item)
+    raw = getattr(item, "__dict__", None)
+    return dict(raw) if isinstance(raw, dict) else {}
 
 
 # --------------------------------------------------------------------------- #
@@ -631,6 +865,18 @@ def _gemini_reasoning_effort(cfg: Config, spec: AgentCallSpec) -> str | None:
     )
     level = gemini_cfg.thinking_by_mode.get(route_key, gemini_cfg.thinking_level)
     return None if level == "default" else level
+
+
+def _openai_reasoning_effort(cfg: Config, spec: AgentCallSpec) -> str | None:
+    """Resolve explicit OpenAI-compatible effort, including an explicit `none`.
+
+    An agent-specific setting wins over the provider-wide default. Returning
+    None leaves the legacy model-name and thinking-token heuristic in effect.
+    """
+    settings = cfg.llm.openai
+    if spec.route.agent in settings.reasoning_effort_by_agent:
+        return settings.reasoning_effort_by_agent[spec.route.agent]
+    return settings.reasoning_effort
 
 
 def _is_reasoning_model(model: str) -> bool:

@@ -218,14 +218,25 @@ class SafetyCfg(BaseModel):
 class OpenAIProviderCfg(BaseModel):
     """OpenAI / OpenAI-compatible endpoint settings.
 
+    `api` selects Chat Completions or Responses. The endpoint must implement
+    the selected protocol. Responses state is not stored by default because
+    Co-Scientist resends its own conversation history.
+
     `base_url` overrides the SDK default. Use it to point at any
     OpenAI-compatible provider (Groq, Together, OpenRouter, Mistral,
     Gemini OpenAI-compat, Ollama local, vLLM, ...). When a named preset
     such as `provider = "openrouter"` is used, this only needs to be set
-    if you want to override the preset's base_url.
+    if you want to override the preset's base_url. Reasoning effort may be
+    configured globally or for individual agents; agent values take precedence.
     """
 
+    api: Literal["chat_completions", "responses"] = "chat_completions"
     base_url: str | None = None
+    store_responses: bool = False
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh"] | None = None
+    reasoning_effort_by_agent: dict[
+        str, Literal["none", "minimal", "low", "medium", "high", "xhigh"]
+    ] = Field(default_factory=dict)
 
 
 class AnthropicProviderCfg(BaseModel):

@@ -116,6 +116,7 @@ def doctor(ctx: typer.Context) -> None:
             "credentials",
             "[green]ok[/green]" if status.authenticated else "[red]missing[/red]",
         )
+        tbl.add_row("API", cfg.llm.openai.api)
     tbl.add_row("detail", status.detail)
 
     # The MCP server exists to give a CLI backend forced tool use and URL

@@ -454,6 +454,9 @@ def _content_to_dicts(content) -> list[dict[str, Any]]:
             provider_fields = getattr(b, "provider_fields", None)
             if isinstance(provider_fields, dict) and provider_fields:
                 d["provider_fields"] = provider_fields
+            responses_output_items = getattr(b, "responses_output_items", None)
+            if isinstance(responses_output_items, list) and responses_output_items:
+                d["responses_output_items"] = responses_output_items
             out.append(d)
         elif t == "thinking":
             d: dict[str, Any] = {"type": "thinking", "thinking": getattr(b, "thinking", "")}

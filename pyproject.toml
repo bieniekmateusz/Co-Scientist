@@ -18,7 +18,7 @@ dependencies = [
     # subscription and neither SDK is imported on the request path. `openai` is
     # also what serves embeddings, which no CLI exposes.
     "anthropic>=0.40.0",
-    "openai>=1.40.0",
+    "openai>=1.66.0",
     # Async stack
     "aiosqlite>=0.20.0",
     "httpx>=0.27.0",
@@ -61,7 +61,7 @@ dev = [
 ]
 # Retained so older `pip install co-scientist[openai]` invocations keep
 # resolving; the SDK is in the default dependency set (embeddings only).
-openai = ["openai>=1.40.0"]
+openai = ["openai>=1.66.0"]
 
 [project.scripts]
 co-scientist = "co_scientist.cli:app"

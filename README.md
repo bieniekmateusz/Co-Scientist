@@ -202,7 +202,36 @@ metareview_feedback = "<cheap-model>"
 metareview_final    = "<strong-model>"
 classifier          = "<cheap-model>"
 judge               = "<cheap-model>"
+
+[llm.openai]
+# Select the API protocol exposed by your endpoint.
+api = "responses" # chat_completions (default) | responses
+# Co-Scientist owns history; don't retain response state at the endpoint.
+store_responses = false
+# Optional provider-wide default; per-agent entries below override it.
+reasoning_effort = "none"
+# Values supported by many OpenAI-compatible APIs: none, minimal, low, medium,
+# high, xhigh. The endpoint/model may support only a subset.
+
+[llm.openai.reasoning_effort_by_agent]
+parse_goal = "low"
+generation = "high"
+reflection = "high"
+ranking = "low"
+evolution = "high"
+metareview = "medium"
+classifier = "low"
+judge = "low"
 ```
+
+Chat Completions receives `reasoning_effort`; Responses receives
+`reasoning: {effort: ...}`. Effort entries are keyed by agent name (the same
+roles as `[models]`) and apply to the model routed to that agent. An agent
+entry wins over the provider-wide setting. An explicit `none` is sent to the
+endpoint, which can matter when its default reasoning mode is incompatible
+with function tools. If no explicit setting is provided, the existing
+thinking-token translation heuristic remains in effect. The endpoint must
+support the selected API protocol and reasoning values.
 
 Providers are listed alphabetically. `openrouter` is the default, but nothing else about the system prefers it; pick whichever you have a key for.
 
@@ -214,7 +243,7 @@ Providers are listed alphabetically. `openrouter` is the default, but nothing el
 | `mistral`             | api.mistral.ai                                          | `MISTRAL_API_KEY`       | `mistral-large-latest`, `codestral-latest`                |
 | `ollama`              | localhost:11434 — local models                          | *(none)*                | `llama3.3:70b`, `qwen2.5:32b`                             |
 | `openai`              | api.openai.com                                          | `OPENAI_API_KEY`        | `gpt-5`, `gpt-4o`, `o3-mini`                              |
-| `openai_compatible`   | Anything else; set `[llm.openai] base_url` explicitly   | `OPENAI_API_KEY`        | depends                                                   |
+| `openai_compatible`   | Anything else; set `[llm.openai] base_url` explicitly; select `api` if needed | `OPENAI_API_KEY` | depends |
 | `openrouter` *(default)* | openrouter.ai — 200+ models from every major vendor  | `OPENROUTER_API_KEY`    | `openai/gpt-5`, `google/gemini-2.5-pro`, `anthropic/claude-3.5-sonnet`, `meta-llama/llama-3.3-70b-instruct` |
 | `together`            | api.together.xyz                                        | `TOGETHER_API_KEY`      | `meta-llama/Llama-3.3-70B-Instruct-Turbo`                 |
 
