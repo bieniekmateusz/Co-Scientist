@@ -94,17 +94,17 @@ reserve    = 0.08
 #   claude_cli   either the anthropic ids above, or "opus" / "sonnet" / "haiku"
 #   codex_cli    Codex model ids your ChatGPT account is entitled to
 [models]
-parse_goal          = "anthropic/claude-sonnet-4-6"
-generation          = "anthropic/claude-opus-4-7"
-reflection          = "anthropic/claude-opus-4-7"
-evolution           = "anthropic/claude-opus-4-7"
-ranking_pairwise    = "anthropic/claude-sonnet-4-6"
-ranking_debate      = "anthropic/claude-sonnet-4-6"
-ranking_priority    = "anthropic/claude-opus-4-7"
-metareview_feedback = "anthropic/claude-sonnet-4-6"
-metareview_final    = "anthropic/claude-opus-4-7"
-classifier          = "anthropic/claude-haiku-4.5"
-judge               = "anthropic/claude-sonnet-4-6"
+parse_goal          = "gpt-6-luna"
+generation          = "gpt-6-luna"
+reflection          = "gpt-6-luna"
+evolution           = "gpt-6-luna"
+ranking_pairwise    = "gpt-6-luna"
+ranking_debate      = "gpt-6-luna"
+ranking_priority    = "gpt-6-luna"
+metareview_feedback = "gpt-6-luna"
+metareview_final    = "gpt-6-luna"
+classifier          = "gpt-6-luna"
+judge               = "gpt-6-luna"
 
 # Extended-reasoning budgets, in tokens. Only `provider = "anthropic"` sends
 # these as a real thinking budget. Under the default OpenRouter provider they
@@ -219,7 +219,7 @@ classifier_warn_categories = ["dual_use_bio"]
 # own key, including OPENROUTER_API_KEY. A stray one in your environment gets
 # sent to OpenRouter and rejected — unset it, or set only the preset's key.
 [llm]
-provider = "openrouter"
+provider = "openai_compatible"
 
 [llm.claude_cli]
 binary = "claude"
@@ -243,8 +243,23 @@ max_parallel = 3
 
 [llm.openai]
 # Point at any OpenAI-compatible endpoint. Only needed for
-# provider = "openai_compatible", or to override a named preset's base_url.
-# base_url = ""
+#provider = "openai_compatible" # , or to override a named preset's base_url.
+api = "responses"                 # chat_completions | responses
+base_url = ""
+store_responses = false            # Co-Scientist resends its own conversation history
+
+# Reasoning effort controls how much deliberate reasoning each model call uses;
+# it is not an output-token cap. Keep routine calls cheap and reserve medium
+# effort for research, critique, synthesis, and the final overview.
+[llm.openai.reasoning_effort_by_agent]
+parse_goal = "none"
+generation = "none"
+reflection = "none"
+ranking = "none"
+evolution = "none"
+metareview = "none"
+classifier = "none"
+judge = "none"
 
 # Gemini reasoning control for provider = "gemini" / "google".
 # "default" omits reasoning_effort and uses the selected model's default.
