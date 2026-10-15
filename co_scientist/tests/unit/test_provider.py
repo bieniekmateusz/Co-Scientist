@@ -19,8 +19,10 @@ from co_scientist.llm.openai_client import (
     _TOOL_CALL_REPLAY_FIELDS_BY_PROVIDER,
     OpenAIClient,
     _adapt_response,
+    _adapt_responses_response,
     _budget_to_effort,
     _build_openai_request,
+    _build_openai_responses_request,
     _is_reasoning_model,
     _provider_fields_from_tool_call,
     _translate_anthropic_message,
@@ -611,6 +613,86 @@ def test_adapt_response_length_finish_maps_to_max_tokens() -> None:
     raw = _fake_openai_response(text="truncated...", finish="length")
     msg = _adapt_response(raw, "gpt-5")
     assert msg.stop_reason == "max_tokens"
+
+
+def test_responses_adapter_preserves_stateless_tool_round_trip() -> None:
+    raw = SimpleNamespace(
+        id="resp_x",
+        model="gpt-6-luna",
+        status="completed",
+        incomplete_details=None,
+        output=[
+            {"type": "reasoning", "id": "rs_x", "summary": [], "encrypted_content": "opaque"},
+            {
+                "type": "function_call",
+                "id": "fc_1",
+                "call_id": "call_1",
+                "name": "pubmed_search",
+                "arguments": '{"query":"x"}',
+                "status": "completed",
+            },
+            {
+                "type": "function_call",
+                "id": "fc_2",
+                "call_id": "call_2",
+                "name": "pubmed_search",
+                "arguments": '{"query":"y"}',
+                "status": "completed",
+            },
+        ],
+        usage={
+            "input_tokens": 12,
+            "output_tokens": 8,
+            "input_tokens_details": {"cached_tokens": 3},
+        },
+    )
+
+    message = _adapt_responses_response(raw, "gpt-6-luna")
+    assert message.stop_reason == "tool_use"
+    assert message.usage.input_tokens == 12
+    assert message.usage.output_tokens == 8
+    assert message.usage.cache_read_input_tokens == 3
+    blocks = _content_to_dicts(message.content)
+    assistant_blocks = [
+        block for block in blocks
+        if block.get("type") != "tool_use" or block["id"] == "call_1"
+    ]
+    spec = AgentCallSpec(
+        route=_route(model="gpt-6-luna"),
+        system_blocks=[CachedBlock("system")],
+        user_blocks=[CachedBlock("search for x and y")],
+        tools=[{
+            "name": "pubmed_search",
+            "description": "Search PubMed",
+            "input_schema": {"type": "object", "properties": {}},
+        }],
+        extra_messages=[
+            {"role": "assistant", "content": assistant_blocks},
+            {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "call_1",
+                    "content": "papers",
+                }],
+            },
+        ],
+    )
+
+    request = _build_openai_responses_request(
+        spec, reasoning_effort="low", store_responses=False,
+    )
+    item_types = [item.get("type", "message") for item in request["input"]]
+    function_call_ids = [
+        item["call_id"] for item in request["input"]
+        if item.get("type") == "function_call"
+    ]
+    assert "reasoning" in item_types
+    assert function_call_ids == ["call_1"]
+    assert any(item.get("call_id") == "call_1" for item in request["input"]
+               if item.get("type") == "function_call_output")
+    assert "reasoning" in request
+    assert request["reasoning"] == {"effort": "low"}
 
 
 # ----------------------------- end-to-end smoke ----------------------------- #
