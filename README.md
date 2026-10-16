@@ -417,6 +417,18 @@ mismatch and rebuilds rather than corrupting them.
 
 Layered: [`config/default.toml`](config/default.toml) → `~/.co-scientist/config.toml` → `./co-scientist.toml` → `--config <path>`. Secrets come from environment only (see [`.env.example`](.env.example)).
 
+### Federated literature tool
+
+API-backed and subscription-CLI runs expose `keyless-research-mcp` through the existing `ToolRegistry`. It is installed with the project and enabled by default; override the setting in `./co-scientist.toml` to disable it:
+
+```toml
+# ./co-scientist.toml
+[keyless_research]
+enabled = false
+```
+
+The `keyless_literature` tool offers federated search, paper lookup, citations, similar-paper discovery, source listing, and Europe PMC open-access full-text reading. Co-Scientist launches the installed MCP server on demand and returns results through the normal tool-result and citation-provenance path. Full-text reading is available only for open-access records covered by Europe PMC; the package does not provide a dedicated ChemRxiv source.
+
 ## Bench: compare models head-to-head
 
 `co-scientist bench` runs the same goal under N different `(provider, model)` configurations and ranks them via a single shared Elo tournament. Each candidate independently generates hypotheses; then every candidate-pair plays `--matches` head-to-head debates, judged by ONE fixed judge model (picked separately so no candidate scores its own work).

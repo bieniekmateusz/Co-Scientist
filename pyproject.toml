@@ -32,6 +32,8 @@ dependencies = [
     "jinja2>=3.1.4",
     # Structured-output validation at the MCP tool boundary
     "jsonschema>=4.22.0",
+    # Federated academic literature search MCP server
+    "keyless-research-mcp==0.1.0",
     # Vectors + embeddings
     "voyageai>=0.2.3",
     "faiss-cpu>=1.8.0",

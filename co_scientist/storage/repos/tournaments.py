@@ -99,6 +99,16 @@ async def count_matches(conn: aiosqlite.Connection, session_id: str) -> int:
     return row["n"] if row else 0
 
 
+async def count_match_records(conn: aiosqlite.Connection, session_id: str) -> int:
+    """Count all recorded outcomes, including invalid verdicts."""
+    async with conn.execute(
+        "SELECT COUNT(*) AS n FROM tournament_matches WHERE session_id=?",
+        (session_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    return row["n"] if row else 0
+
+
 async def recent_rationales(
     conn: aiosqlite.Connection, session_id: str, limit: int = 50
 ) -> list[str]:

@@ -425,19 +425,17 @@ class Supervisor:
 
         enqueued = 0
 
-        # We anchor idle-refinement idempotency keys on the current match count
-        # rather than a fresh task id. Otherwise every idle pass — which can
-        # fire every ~10s — would enqueue a *new* tournament/evolution task
-        # even when a prior one is still pending, flooding the queue and
-        # double-counting work toward the budget.
-        anchor_mc = await tourney_repo.count_matches(conn, session.id)
+        # Anchor idle-refinement keys on every recorded match row. Invalid
+        # verdicts do not count toward Elo/stability, but must still advance
+        # this key so they cannot block another tournament attempt.
+        anchor_mc = await tourney_repo.count_match_records(conn, session.id)
 
         # Always: one tournament batch to keep refining Elo.
         in_tournament = await hyp_repo.list_for_session(
             conn, session.id, state="in_tournament"
         )
         if len(in_tournament) >= 2:
-            await task_repo.enqueue(conn, Task(
+            inserted = await task_repo.enqueue(conn, Task(
                 id=ids.task_id(), session_id=session.id,
                 created_at=datetime.now(UTC),
                 agent="ranking", action="RunTournamentBatch",
@@ -445,13 +443,13 @@ class Supervisor:
                 priority=150, status="pending",
                 idempotency_key=f"{session.id}::ranking::idle::{anchor_mc}",
             ))
-            enqueued += 1
+            enqueued += inserted
 
         # If the leaderboard has matured, evolve. The maturity gate and top_k are
         # config-driven so deep runs can lower the gate to grow the pool faster.
         mature = sum(1 for h in in_tournament if h.matches_played >= 3)
         if mature >= self.cfg.evolution.min_mature:
-            await task_repo.enqueue(conn, Task(
+            inserted = await task_repo.enqueue(conn, Task(
                 id=ids.task_id(), session_id=session.id,
                 created_at=datetime.now(UTC),
                 agent="evolution", action="EvolveTopHypotheses",
@@ -463,7 +461,7 @@ class Supervisor:
                 priority=140, status="pending",
                 idempotency_key=f"{session.id}::evolution::idle::{anchor_mc}",
             ))
-            enqueued += 1
+            enqueued += inserted
 
         # Periodic meta-review (every ~5 minutes wall, approximated by match count).
         mc = await tourney_repo.count_matches(conn, session.id)
@@ -475,7 +473,7 @@ class Supervisor:
             row = await cur.fetchone()
         feedback_count = row["n"] if row else 0
         if mc >= (feedback_count + 1) * 50:
-            await task_repo.enqueue(conn, Task(
+            inserted = await task_repo.enqueue(conn, Task(
                 id=ids.task_id(), session_id=session.id,
                 created_at=datetime.now(UTC),
                 agent="metareview", action="GenerateSystemFeedback",
@@ -483,7 +481,7 @@ class Supervisor:
                 priority=180, status="pending",
                 idempotency_key=f"{session.id}::metareview::feedback::{feedback_count + 1}",
             ))
-            enqueued += 1
+            enqueued += inserted
 
         return enqueued
 

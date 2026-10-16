@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import re
 import socket
 import time
 from io import BytesIO
@@ -248,6 +249,11 @@ class WebFetchTool:
 def _extract_html(html: str, url: str) -> tuple[str, str | None]:
     import trafilatura
 
+    if "<article" in html[:5000].lower():
+        text, title = _extract_jats(html)
+        if text:
+            return text, title
+
     extracted = trafilatura.extract(
         html, url=url, include_comments=False, include_tables=True
     )
@@ -256,6 +262,64 @@ def _extract_html(html: str, url: str) -> tuple[str, str | None]:
     if md:
         title = md.title
     return extracted or "", title
+
+
+def _extract_jats(xml: str) -> tuple[str, str | None]:
+    """Extract article prose from Europe PMC JATS XML without retaining markup noise."""
+    from xml.etree import ElementTree as ET
+
+    upper = xml.upper()
+    if "<!ENTITY" in upper or re.search(r"<!DOCTYPE[^>]*\[", xml, flags=re.IGNORECASE | re.DOTALL):
+        return "", None
+    # PMC JATS declares its public DTD, but does not require it for parsing.
+    # Remove the external declaration so ElementTree never attempts resolution.
+    xml = re.sub(r"<!DOCTYPE[^>]*>", "", xml, count=1, flags=re.IGNORECASE | re.DOTALL)
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return "", None
+
+    def local_name(element) -> str:
+        return element.tag.split("}")[-1]
+
+    def normalized_text(element) -> str:
+        return " ".join("".join(element.itertext()).split())
+
+    title_element = root.find(".//{*}article-meta/{*}title-group/{*}article-title")
+    if title_element is None:
+        title_element = root.find(".//{*}article-title")
+    title = normalized_text(title_element) if title_element is not None else None
+
+    parts: list[str] = []
+    ignored = {"ref-list", "back", "fig", "table-wrap", "supplementary-material", "fn-group"}
+
+    def append_prose(element) -> None:
+        for child in element:
+            tag = local_name(child)
+            if tag in ignored or tag == "title":
+                continue
+            if tag == "p":
+                text = normalized_text(child)
+                if text:
+                    parts.append(text)
+                continue
+            if tag == "sec":
+                heading = child.find("./{*}title")
+                if heading is not None and normalized_text(heading):
+                    parts.append(f"\n## {normalized_text(heading)}")
+                append_prose(child)
+                continue
+            append_prose(child)
+
+    abstract = root.find(".//{*}abstract")
+    if abstract is not None:
+        parts.append("## Abstract")
+        append_prose(abstract)
+    body = root.find(".//{*}body")
+    if body is not None:
+        append_prose(body)
+
+    return "\n\n".join(parts), title
 
 
 def _extract_pdf(data: bytes) -> str:

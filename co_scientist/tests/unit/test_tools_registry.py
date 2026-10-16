@@ -31,6 +31,21 @@ def test_web_search_skipped_when_no_search_api_key(tmp_cfg) -> None:
     assert "europe_pmc_search" in names
 
 
+def test_keyless_research_tool_is_enabled_by_default(tmp_cfg) -> None:
+    assert tmp_cfg.keyless_research.enabled is True
+
+    reg = ToolRegistry(tmp_cfg).discover()
+    assert "keyless_literature" in {tool.name for tool in reg.all()}
+    for agent in ("generation", "reflection", "evolution"):
+        assert "keyless_literature" in {tool.name for tool in reg.tools_for(agent)}
+    assert "keyless_literature" not in {tool.name for tool in reg.tools_for("ranking")}
+
+    tmp_cfg.keyless_research.enabled = False
+    assert "keyless_literature" not in {
+        tool.name for tool in ToolRegistry(tmp_cfg).discover().all()
+    }
+
+
 def test_agent_allowlist_resolution(tmp_cfg) -> None:
     tmp_cfg.secrets.TAVILY_API_KEY = "sk-fake"
     reg = ToolRegistry(tmp_cfg).discover()

@@ -173,6 +173,9 @@ max_bytes = 5_000_000
 timeout_seconds = 30
 user_agent = "co-scientist/0.1 (+research; contact via project README)"
 
+[keyless_research]
+enabled = true
+
 [code_exec]
 provider = "local"
 local_cpu_seconds = 30

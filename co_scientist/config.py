@@ -200,6 +200,12 @@ class WebFetchCfg(BaseModel):
     user_agent: str = "co-scientist/0.1"
 
 
+class KeylessResearchCfg(BaseModel):
+    """Bridge to the installed keyless-research-mcp literature server."""
+
+    enabled: bool = True
+
+
 class CodeExecCfg(BaseModel):
     provider: str = "local"
     local_cpu_seconds: int = 30
@@ -398,6 +404,7 @@ class Config(BaseModel):
     lease: LeaseCfg = Field(default_factory=LeaseCfg)
     web_search: WebSearchCfg = Field(default_factory=WebSearchCfg)
     web_fetch: WebFetchCfg = Field(default_factory=WebFetchCfg)
+    keyless_research: KeylessResearchCfg = Field(default_factory=KeylessResearchCfg)
     code_exec: CodeExecCfg = Field(default_factory=CodeExecCfg)
     safety: SafetyCfg = Field(default_factory=SafetyCfg)
     llm: LLMCfg = Field(default_factory=LLMCfg)

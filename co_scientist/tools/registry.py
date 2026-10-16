@@ -13,6 +13,7 @@ from .base import Tool, ToolCtx, ToolResult, to_anthropic_tool
 from .builtins.arxiv import ArxivSearchTool
 from .builtins.europe_pmc import EuropePMCSearchTool
 from .builtins.pubmed import PubmedSearchTool
+from .keyless_research import KeylessResearchTool
 from .science_skills import ScienceSkillTool, discover_skills
 from .web_fetch import WebFetchTool
 from .web_search import WebSearchTool
@@ -23,11 +24,13 @@ AGENT_TOOLS: dict[str, set[str]] = {
     "generation": {
         "web_search", "web_fetch",
         "pubmed_search", "arxiv_search", "europe_pmc_search",
+        "keyless_literature",
         "literature_*",   # any science-skills literature_* tools
     },
     "reflection": {
         "web_search", "web_fetch",
         "pubmed_search", "arxiv_search", "europe_pmc_search",
+        "keyless_literature",
         "literature_*",
         # code_exec wired in M2
     },
@@ -35,6 +38,7 @@ AGENT_TOOLS: dict[str, set[str]] = {
     "evolution": {
         "web_search", "web_fetch",
         "pubmed_search", "arxiv_search", "europe_pmc_search",
+        "keyless_literature",
         "literature_*",
     },
     "proximity": set(),
@@ -66,6 +70,9 @@ class ToolRegistry:
             or self._cfg.secrets.BRAVE_API_KEY or os.environ.get("BRAVE_API_KEY")
         ):
             self._register(WebSearchTool(self._cfg))
+        # The MCP server is a project dependency and is enabled by default.
+        if self._cfg.keyless_research.enabled:
+            self._register(KeylessResearchTool(self._cfg))
         # Science-skills
         for meta in discover_skills(self._cfg):
             self._register(ScienceSkillTool(self._cfg, meta))
